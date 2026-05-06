@@ -1,6 +1,15 @@
 # testing-infra — `pve1-testing1`
 
-Terraform provisions a single-node **k3s** VM on **Proxmox** (`pve1`). Helm values live under `gitops/` for **Headlamp** and **Infisical** (GitOps-friendly layout; Argo CD is out of scope for phase 1).
+This repository holds:
+
+| Area | Contents |
+|------|----------|
+| **Terraform** | Proxmox VM + cloud-init for a single-node **k3s** guest (`environments/pve1-testing1/terraform/`). |
+| **Helm values** | `gitops/environments/pve1-testing1/*.yaml` for **Headlamp**, **Infisical** (standalone Postgres/Redis chart), and the **Infisical Secrets Operator**. |
+| **Automation** | `Makefile` runs Terraform and Helm from your laptop using **`KUBECONFIG` → `kubeconfig.pve1-testing1`** (path at repo root; copy from the guest — matches `.gitignore` patterns). |
+| **Scripts** | `scripts/with-proxmox-env.sh` maps `.env` into **bpg/proxmox** provider variables. |
+
+**Argo CD** is intentionally **not** part of the Makefile or manifests here yet (**Phase 2**); the `gitops/` layout is structured so future Argo applications can reference the same values paths.
 
 ## Prerequisites
 
@@ -81,11 +90,18 @@ scp ubuntu@10.0.0.205:/home/ubuntu/.kube/config ./kubeconfig.pve1-testing1
 kubectl --kubeconfig kubeconfig.pve1-testing1 get nodes
 ```
 
-## Helm (Headlamp + Infisical)
+## Helm (Headlamp + Infisical + Infisical operator)
 
-Requires **Helm 3** and **kubectl** on the machine where you run `make` (not on the cluster node). macOS: `brew install helm kubectl`.
+Requires **Helm 3** and **kubectl** on the machine where you run `make` (not on the cluster node). macOS: **`brew install helm kubectl`**.
 
-Uses bundled **Traefik** on k3s; chart overrides set `ingressClassName: traefik`.
+`make helm-*` targets add/update Helm repos (**`headlamp`**, **`infisical`**) and install charts using files under **`gitops/environments/pve1-testing1/`**. Uses cluster ingress controller **Traefik** (bundled with k3s); Infisical and Headlamp values set **`ingressClassName: traefik`**.
+
+**Typical install sequence**
+
+1. `export KUBECONFIG="$(pwd)/kubeconfig.pve1-testing1"`
+2. **`make helm-headlamp`**
+3. Create **`infisical-secrets`** in namespace **`infisical`** (required **before** the Infisical app becomes Ready — see below), then **`make helm-infisical`**
+4. Optionally **`make helm-infisical-operator`**, machine identity Secret, edit **`infisical-secret-demo.yaml`**, **`kubectl apply`** (sync to a Kubernetes **`Secret`**)
 
 ```bash
 export KUBECONFIG="$(pwd)/kubeconfig.pve1-testing1"
@@ -105,6 +121,8 @@ kubectl create secret generic infisical-secrets \
 
 (`SITE_URL` should match how you open the UI—in `/etc/hosts` setups that is usually `http://infisical.pve1-testing1.local`. For local port-forward testing only, `http://localhost` is fine.)
 
+If **`infisical-secrets`** already exists with bad values, delete and recreate: **`kubectl delete secret infisical-secrets -n infisical`**, run the **`kubectl create secret ...`** block again, then **`kubectl rollout restart deployment -n infisical infisical-infisical-standalone-infisical`** so pods reload **`envFrom`**.
+
 Then install or reconcile Helm (chart name is **`infisical/infisical-standalone`**):
 
 ```bash
@@ -115,6 +133,11 @@ make helm-infisical
 
 ```bash
 kubectl port-forward -n infisical svc/infisical-infisical-standalone-infisical 8080:8080
+```
+
+This process **blocks the terminal** until you stop it (Ctrl+C). Use a **second terminal** for **`curl http://localhost:8080/api/status`**, or run port-forward in the **background** (`&`).
+
+```bash
 curl -sS http://localhost:8080/api/status
 ```
 
@@ -138,32 +161,34 @@ export KUBECONFIG="$(pwd)/kubeconfig.pve1-testing1"
 make helm-infisical-operator
 ```
 
-Values live in `gitops/environments/pve1-testing1/infisical-operator-values.yaml`. They point **`hostAPI`** at the in-cluster Infisical Service (**HTTP**, port **8080**):
+Release **`infisical-secrets-operator`** in namespace **`infisical-system`** (chart **`infisical/secrets-operator`**). Helm values **`gitops/environments/pve1-testing1/infisical-operator-values.yaml`** set **`hostAPI`** to the in-cluster Infisical API (**HTTP**, Infisical **`Service`** port **8080**):
 
 `http://infisical-infisical-standalone-infisical.infisical.svc.cluster.local:8080/api`
 
 **Authentication choice for this repo:** **Universal Auth** (machine identity client ID + secret in a Kubernetes Secret). It avoids extra TokenReview/RBAC wiring; **[Kubernetes Auth](https://infisical.com/docs/integrations/platforms/kubernetes/infisical-secret-crd)** is available if you prefer bound SA tokens later.
 
-1. In the Infisical UI, create a **Machine Identity** with **Universal Auth**, attach it to the **project** you want synced, and grant permission to **read** secrets for the target environment (for example **`dev`**).
+1. In the Infisical UI, create a **Machine Identity** with **Universal Auth**, attach it to the **project** to sync, and grant **read** access to secrets for the **environment slug** you will use in `infisical-secret-demo.yaml` (e.g. **`prod`**, **`development`** — copy slugs from **Project → Environments**, not display titles).
 
-2. Create credentials once (replace placeholders):
+2. Create the Kubernetes Secret holding **`clientId`** and **`clientSecret`** (use real values from Infisical). If the Secret already exists with wrong data, delete it first:
 
 ```bash
+kubectl delete secret infisical-operator-machine-identity -n infisical-system 2>/dev/null || true
+
 kubectl create secret generic infisical-operator-machine-identity \
   --namespace infisical-system \
   --from-literal=clientId="YOUR_CLIENT_ID" \
   --from-literal=clientSecret="YOUR_CLIENT_SECRET"
 ```
 
-3. Edit `gitops/environments/pve1-testing1/infisical-secret-demo.yaml`: set **`projectSlug`** and **`envSlug`** to the **slugs** from Infisical (usually lowercase with hyphens, e.g. `kube-vault-1` / `production` — not display titles like `Kube-Vault-1` / `Production`, which the API rejects).
+3. Edit **`gitops/environments/pve1-testing1/infisical-secret-demo.yaml`**: set **`projectSlug`** and **`envSlug`** to slugs from Infisical (**lowercase**, letters/digits/hyphens only). Wrong casing (e.g. **`Kube-Vault-1`**) triggers API validation errors; **`production`** vs **`prod`** mismatches trigger folder / sync errors — see **Troubleshooting**.
 
-4. Apply the **`InfisicalSecret`** CR (adjust paths/commits however you track GitOps):
+4. Apply the **`InfisicalSecret`** CR:
 
 ```bash
 kubectl apply -f gitops/environments/pve1-testing1/infisical-secret-demo.yaml
 ```
 
-The operator creates **`demo-infisical-managed-secret`** in **`default`**. Inspect sync status:
+The operator creates **`demo-infisical-managed-secret`** in **`default`** when **`ReadyToSyncSecrets`** is healthy. Inspect sync:
 
 ```bash
 kubectl get infisicalsecret -A
@@ -173,12 +198,30 @@ kubectl get secret demo-infisical-managed-secret -n default -o yaml
 
 Reference: **[InfisicalSecret CRD](https://infisical.com/docs/integrations/platforms/kubernetes/infisical-secret-crd)**.
 
+## Makefile targets
+
+| Target | Role |
+|--------|------|
+| `terraform-init` / `terraform-plan` / `terraform-apply` / `terraform-apply-auto` | Terraform via **`scripts/with-proxmox-env.sh`** in **`environments/pve1-testing1/terraform/`**. |
+| `terraform-destroy` / `terraform-destroy-auto` | Destroy applied Terraform resources (prompts unless `-auto`). |
+| `helm-repos` | Adds **`headlamp`** + **`infisical`** chart repos and **`helm repo update`** (invoked by other **`helm-*`** targets). |
+| `helm-headlamp` | **`headlamp/headlamp`** → **`kube-system`**, values **`gitops/.../headlamp-values.yaml`**. |
+| `helm-infisical` | **`infisical/infisical-standalone`** → **`infisical`**, values **`gitops/.../infisical-values.yaml`**. |
+| `helm-infisical-operator` | **`infisical/secrets-operator`** → **`infisical-system`**, values **`gitops/.../infisical-operator-values.yaml`**. |
+
+Override tooling with **`HELM=/path/to/helm`**; kubeconfig with **`KUBECONFIG`** (defaults to **`kubeconfig.pve1-testing1`** at the **Makefile** / repo root via **`ROOT`**).
+
 ## Layout
 
-- `environments/pve1-testing1/terraform/` — Proxmox VM + cloud-init snippets  
-- `environments/pve1-testing1/bootstrap/cloud-init/` — cloud-init templates  
-- `gitops/environments/pve1-testing1/` — Helm values for optional installs (including Infisical operator + demo CR)  
-- `scripts/with-proxmox-env.sh` — `.env` → provider env vars  
+- **`environments/pve1-testing1/terraform/`** — Proxmox provider, VM, disk, cloud-init snippet refs  
+- **`environments/pve1-testing1/bootstrap/cloud-init/`** — cloud-init templates referenced by Terraform  
+- **`gitops/environments/pve1-testing1/headlamp-values.yaml`** — Headlamp Ingress (**Traefik**, `headlamp.pve1-testing1.local`)  
+- **`gitops/environments/pve1-testing1/infisical-values.yaml`** — Infisical standalone (**`ingress.nginx.enabled: false`**, Traefik host **`infisical.pve1-testing1.local`**, **`infisical.replicaCount: 1`**)  
+- **`gitops/environments/pve1-testing1/infisical-operator-values.yaml`** — Secrets Operator **`hostAPI`** (in-cluster Infisical **`ClusterIP:8080`**)  
+- **`gitops/environments/pve1-testing1/infisical-secret-demo.yaml`** — Example **`InfisicalSecret`** → **`demo-infisical-managed-secret`** (edit slugs before apply)  
+- **`scripts/with-proxmox-env.sh`** — load **`.env`** → **`PROXMOX_VE_*`** for Terraform  
+- **`.env.example`** — template for **`PVE1_*`** / optional **`PVE1_SSH_PRIVATE_KEY_FILE`**  
+- **`kubeconfig.pve1-testing1`** — copied from the guest (**`.gitignore`** ignores **`kubeconfig*`**); **`Makefile`** defaults **`KUBECONFIG`** to **`$(ROOT)/kubeconfig.pve1-testing1`**
 
 ## Troubleshooting
 
@@ -271,12 +314,20 @@ You usually see this when **`envSlug`** does not match any environment **slug** 
 
 Then **`kubectl apply -f gitops/environments/pve1-testing1/infisical-secret-demo.yaml`** again and **`kubectl describe infisicalsecret demo-infisical-sync -n default`**.
 
+### Infisical operator: `Slug field can only contain lowercase letters...` (HTTP 422)
+
+**`projectSlug`** (and related fields) must match Infisical’s slug rules: **lowercase ASCII letters, digits, and hyphens** — not display titles with spaces or capitals (e.g. use **`kube-vault-1`**, not **`Kube-Vault-1`**).
+
+### Infisical operator: `Project with slug '…' not found` (HTTP 404)
+
+The slug string does not match any project in the org (typo, wrong org, or placeholders such as **`must-edit-project-slug`** left in **`infisical-secret-demo.yaml`**). Fix **`projectSlug`** from **Project → Settings**, re-apply the **`InfisicalSecret`**.
+
 ## Caveats
 
-- **Sizing**: 2 vCPU / 4 GiB matches Infisical “minimum” but is tight with **k3s + Postgres + Redis + Headlamp**. Increase resources if pods pend/OOM.
+- **Sizing**: 2 vCPU / 4 GiB matches Infisical “minimum” but is tight with **k3s + Postgres + Redis + Headlamp + Infisical Secrets Operator**. Increase resources if pods pend/OOM.
 - **Snippets**: Datacenter → Storage must enable **Snippets** on `snippets_datastore_id`. HTTP **403** on upload almost always means missing **Datastore** privileges on that storage for the token — see **Troubleshooting**.
 - **Disk**: Terraform resizes the **`disk_interface`** slot (`virtio0` vs `scsi0`). If it does not match your template’s OS disk, you get a **second empty large disk** and root stays small — see **Troubleshooting**.
 
 ## Phase 2
 
-GitOps with **Argo CD** can consume the same `gitops/` values paths once the cluster baseline works.
+**Argo CD** is not wired in this repository yet (no chart install or Application manifests). The intent is to point Argo at the same **`gitops/environments/pve1-testing1/`** values (and/or additional app manifests) once you add them.
