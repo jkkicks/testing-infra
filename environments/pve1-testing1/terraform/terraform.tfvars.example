@@ -1,0 +1,13 @@
+# Copy to `terraform.tfvars` (gitignored pattern *.auto.tfvars still risky — prefer exporting TF_VAR_*, see README).
+
+# Boot/OS disk bus — must match template (this repo defaults to scsi0 = VirtIO SCSI + scsi0 → /dev/sda).
+# If lsblk shows root on /dev/vda*, use: disk_interface = "virtio0"
+
+template_vm_id = 9000 # Ubuntu Noble cloud-init template on Proxmox (your clone source)
+
+# Match your Proxmox API host if snippet uploads SSH to the wrong interface (optional).
+# proxmox_ssh_host = "10.0.0.201"
+
+# Where Terraform uploads cloud-init snippets. Must have "Snippets" enabled and your API token
+# role must allow Datastore.AllocateSpace + Datastore.Audit on `/storage/<name>` (see README).
+# snippets_datastore_id = "local"

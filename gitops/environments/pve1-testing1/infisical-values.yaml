@@ -1,0 +1,12 @@
+# Overrides for Infisical standalone Postgres chart on single-node k3s (t3a.medium-class lab VM).
+# Chart defaults + docs: https://infisical.com/docs/self-hosting/deployment-options/kubernetes-helm
+
+infisical:
+  replicaCount: 1
+
+ingress:
+  enabled: true
+  hostName: infisical.pve1-testing1.local
+  ingressClassName: traefik
+  nginx:
+    enabled: false

@@ -1,0 +1,12 @@
+ingress:
+  enabled: true
+  ingressClassName: traefik
+  annotations: {}
+  hosts:
+    - host: headlamp.pve1-testing1.local
+      paths:
+        - path: /
+          type: Prefix
+
+service:
+  type: ClusterIP

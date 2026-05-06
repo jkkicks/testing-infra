@@ -1,0 +1,12 @@
+# Infisical Secrets Operator — talks to self-hosted Infisical in-cluster (same k3s VM).
+# Docs: https://infisical.com/docs/integrations/platforms/kubernetes
+#
+# API is the standalone chart Service on port 8080 (not :4000).
+hostAPI: "http://infisical-infisical-standalone-infisical.infisical.svc.cluster.local:8080/api"
+
+installCRDs: true
+
+# Empty = watch all namespaces for InfisicalSecret CRs. For tighter RBAC, list namespaces here.
+scopedNamespaces: []
+
+scopedRBAC: false

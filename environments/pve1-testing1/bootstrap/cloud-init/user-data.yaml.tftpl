@@ -1,0 +1,42 @@
+#cloud-config
+hostname: ${hostname}
+manage_etc_hosts: true
+# Expand root after Proxmox enlarges the cloned disk (Terraform disk size).
+resize_rootfs: true
+growpart:
+  mode: auto
+  devices:
+    - /
+package_update: true
+# Full apt upgrade during bootstrap can fill the cloud image's small root before resize completes.
+package_upgrade: false
+packages:
+  - curl
+  - qemu-guest-agent
+  - cloud-guest-utils
+users:
+  - default
+  - name: ubuntu
+    groups:
+      - adm
+      - sudo
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - '${ssh_public_key}'
+write_files:
+  - path: /etc/sysctl.d/99-kubernetes-cri.conf
+    permissions: "0644"
+    content: |
+      net.bridge.bridge-nf-call-iptables = 1
+      net.ipv4.ip_forward = 1
+runcmd:
+  - systemctl enable qemu-guest-agent
+  - systemctl start qemu-guest-agent
+  - swapoff -a || true
+  - sed -i '/ swap / s/^/#/' /etc/fstab || true
+  - curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="${k3s_version}" sh -s - server --write-kubeconfig-mode 644
+  - mkdir -p /home/ubuntu/.kube
+  - cp /etc/rancher/k3s/k3s.yaml /home/ubuntu/.kube/config
+  - chown ubuntu:ubuntu /home/ubuntu/.kube/config
+  - sed -i 's/127.0.0.1/${kube_public_ip}/g' /home/ubuntu/.kube/config
