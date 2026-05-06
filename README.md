@@ -2,14 +2,13 @@
 
 This repository holds:
 
-| Area | Contents |
-|------|----------|
-| **Terraform** | Proxmox VM + cloud-init for a single-node **k3s** guest (`environments/pve1-testing1/terraform/`). |
-| **Helm values** | `gitops/environments/pve1-testing1/*.yaml` for **Headlamp**, **Infisical** (standalone Postgres/Redis chart), and the **Infisical Secrets Operator**. |
-| **Automation** | `Makefile` runs Terraform and Helm from your laptop using **`KUBECONFIG` → `kubeconfig.pve1-testing1`** (path at repo root; copy from the guest — matches `.gitignore` patterns). |
-| **Scripts** | `scripts/with-proxmox-env.sh` maps `.env` into **bpg/proxmox** provider variables. |
-
-**Argo CD** is intentionally **not** part of the Makefile or manifests here yet (**Phase 2**); the `gitops/` layout is structured so future Argo applications can reference the same values paths.
+| Area             | Contents                                                                                                                                                                                        |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Terraform**    | Proxmox VM + cloud-init for a single-node **k3s** guest (`environments/pve1-testing1/terraform/`).                                                                                              |
+| **Helm values**  | `gitops/environments/pve1-testing1/*.yaml` for **Argo CD**, **Headlamp**, **Infisical** (standalone Postgres/Redis chart), and the **Infisical Secrets Operator**.                              |
+| **Automation**   | `Makefile` runs Terraform and Helm from your laptop using **`KUBECONFIG` → `kubeconfig.pve1-testing1`** (path at repo root; copy from the guest — matches `.gitignore` patterns).               |
+| **Scripts**      | `scripts/with-proxmox-env.sh` maps `.env` into **bpg/proxmox** provider variables.                                                                                                              |
+| **Argo CD apps** | `gitops/environments/pve1-testing1/argocd/` — bootstrap **`Application`** plus child apps (multi-source Helm + Git values) synced from **`https://github.com/jkkicks/testing-infra`** (`main`). |
 
 ## Prerequisites
 
@@ -22,11 +21,11 @@ This repository holds:
 
 Never commit `.env`. Variables consumed by the helper script:
 
-| `.env` | Maps to |
-|--------|---------|
-| `PVE1_URL` | `PROXMOX_VE_ENDPOINT` (normalized with trailing `/`) |
-| `PVE1_TOKEN_ID` + `PVE1_SECRET` | `PROXMOX_VE_API_TOKEN` as `TOKEN_ID=SECRET` |
-| `PVE1_SSH_PRIVATE_KEY_FILE` | If set and `PROXMOX_VE_SSH_PRIVATE_KEY` is unset, the script reads that PEM path into `PROXMOX_VE_SSH_PRIVATE_KEY` |
+| `.env`                          | Maps to                                                                                                            |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `PVE1_URL`                      | `PROXMOX_VE_ENDPOINT` (normalized with trailing `/`)                                                               |
+| `PVE1_TOKEN_ID` + `PVE1_SECRET` | `PROXMOX_VE_API_TOKEN` as `TOKEN_ID=SECRET`                                                                        |
+| `PVE1_SSH_PRIVATE_KEY_FILE`     | If set and `PROXMOX_VE_SSH_PRIVATE_KEY` is unset, the script reads that PEM path into `PROXMOX_VE_SSH_PRIVATE_KEY` |
 
 **SSH auth for snippet uploads:** With an API token, the provider never uses your interactive root password. **`root@10.0.0.201`** must accept the **same** key Terraform sends:
 
@@ -49,14 +48,14 @@ Optional: `export PROXMOX_VE_INSECURE=false` when using valid TLS on Proxmox.
 
 ### Locked lab inputs (this environment)
 
-| Setting | Value |
-|---------|--------|
-| Guest VM ID | `701` |
-| Node | `pve1` |
-| Bridge | `vmbr0` |
-| Disk storage | `nvme-thin`, ~60 GiB |
-| CPU / RAM | 2 vCPU / 4096 MiB (EC2 **t3a.medium** class) |
-| IPv4 | `10.0.0.205/24`, gw `10.0.0.1`, DNS Quad9 + Google |
+| Setting      | Value                                              |
+| ------------ | -------------------------------------------------- |
+| Guest VM ID  | `701`                                              |
+| Node         | `pve1`                                             |
+| Bridge       | `vmbr0`                                            |
+| Disk storage | `nvme-thin`, ~60 GiB                               |
+| CPU / RAM    | 2 vCPU / 4096 MiB (EC2 **t3a.medium** class)       |
+| IPv4         | `10.0.0.205/24`, gw `10.0.0.1`, DNS Quad9 + Google |
 
 Override defaults via `terraform.tfvars` (gitignored); copy `environments/pve1-testing1/terraform/terraform.tfvars.example`.
 
@@ -90,18 +89,19 @@ scp ubuntu@10.0.0.205:/home/ubuntu/.kube/config ./kubeconfig.pve1-testing1
 kubectl --kubeconfig kubeconfig.pve1-testing1 get nodes
 ```
 
-## Helm (Headlamp + Infisical + Infisical operator)
+## Helm (Argo CD + Headlamp + Infisical + Infisical operator)
 
-Requires **Helm 3** and **kubectl** on the machine where you run `make` (not on the cluster node). macOS: **`brew install helm kubectl`**.
+Requires **Helm 3** and **kubectl** on the machine where you run `make` (not on the cluster node).
 
-`make helm-*` targets add/update Helm repos (**`headlamp`**, **`infisical`**) and install charts using files under **`gitops/environments/pve1-testing1/`**. Uses cluster ingress controller **Traefik** (bundled with k3s); Infisical and Headlamp values set **`ingressClassName: traefik`**.
+`make helm-*` targets add/update Helm repos (**`argo`**, **`headlamp`**, **`infisical`**) and install charts using files under **`gitops/environments/pve1-testing1/`**. Uses cluster ingress controller **Traefik** (bundled with k3s); Ingress values use **`ingressClassName: traefik`** where applicable.
 
 **Typical install sequence**
 
 1. `export KUBECONFIG="$(pwd)/kubeconfig.pve1-testing1"`
-2. **`make helm-headlamp`**
-3. Create **`infisical-secrets`** in namespace **`infisical`** (required **before** the Infisical app becomes Ready — see below), then **`make helm-infisical`**
-4. Optionally **`make helm-infisical-operator`**, machine identity Secret, edit **`infisical-secret-demo.yaml`**, **`kubectl apply`** (sync to a Kubernetes **`Secret`**)
+2. Optionally **`make helm-argocd`** (GitOps UI — see **Argo CD (GitOps)** below), then bootstrap **`Application`** from Git after manifests are on **`main`**.
+3. **`make helm-headlamp`** _(skip if Argo already manages Headlamp — see migration note under **Argo CD**)_.
+4. Create **`infisical-secrets`** in namespace **`infisical`** (required **before** the Infisical app becomes Ready — see below), then **`make helm-infisical`** _(or Argo)_.
+5. Optionally **`make helm-infisical-operator`**, machine identity Secret, edit **`infisical-secret-demo.yaml`**, **`kubectl apply`** (sync to a Kubernetes **`Secret`**)
 
 ```bash
 export KUBECONFIG="$(pwd)/kubeconfig.pve1-testing1"
@@ -147,6 +147,7 @@ See [Infisical — Kubernetes (Helm)](https://infisical.com/docs/self-hosting/de
 
 Add hostnames (or route DNS) for:
 
+- `argocd.pve1-testing1.local`
 - `headlamp.pve1-testing1.local`
 - `infisical.pve1-testing1.local`
 
@@ -198,29 +199,89 @@ kubectl get secret demo-infisical-managed-secret -n default -o yaml
 
 Reference: **[InfisicalSecret CRD](https://infisical.com/docs/integrations/platforms/kubernetes/infisical-secret-crd)**.
 
+## Argo CD (GitOps)
+
+The cluster must reach **`github.com`** (HTTPS) so Argo CD can clone **`https://github.com/jkkicks/testing-infra.git`**.
+
+**Install Argo CD (Helm; chart version pinned in `Makefile`)**
+
+```bash
+export KUBECONFIG="$(pwd)/kubeconfig.pve1-testing1"
+make helm-argocd
+kubectl get pods -n argocd
+```
+
+Values file: **`gitops/environments/pve1-testing1/argocd-values.yaml`** (Traefik Ingress **`argocd.pve1-testing1.local`**, **`server.insecure`** so the Ingress backend uses HTTP — matches Headlamp/Infisical lab ingress).
+
+**Initial admin password**
+
+User **`admin`**. Password:
+
+```bash
+kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath="{.data.password}" | base64 -d
+echo
+```
+
+Open **`http://argocd.pve1-testing1.local`** (add **`argocd.pve1-testing1.local`** to **`/etc/hosts`** like the other Traefik hostnames).
+
+**Bootstrap app-of-apps**
+
+Manifests live under **`gitops/environments/pve1-testing1/argocd/`**:
+
+| File                 | Role                                                                                                                                                           |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`bootstrap.yaml`** | Root **`Application`** (**`pve1-testing1-root`**) → Git path **`gitops/environments/pve1-testing1/argocd/apps`**                                               |
+| **`apps/*.yaml`**    | Child **`Application`** CRs (Headlamp, Infisical, Infisical Secrets Operator) using **multi-source** Helm chart + **`$values/...`** value files from this repo |
+
+**Important:** **`bootstrap.yaml`** syncs from **`targetRevision: main`**. **Commit and push** these manifests to **`main`** before expecting Argo to reconcile children from Git. If your default branch is not **`main`**, edit **`targetRevision`** in **`bootstrap.yaml`** and **`apps/*.yaml`** to match.
+
+After **`make helm-argocd`** and a push to GitHub:
+
+```bash
+kubectl apply -f gitops/environments/pve1-testing1/argocd/bootstrap.yaml
+```
+
+Argo CD creates the root app; it then applies the **`Application`** manifests under **`argocd/apps/`**. Chart **`targetRevision`** values are pinned in those manifests (**Headlamp** `0.41.0`, **infisical-standalone** `1.8.0`, **secrets-operator** `0.10.32`). The **`Makefile`** pins **`argo-cd`** (`9.5.12`).
+
+**Migrating from Makefile Helm installs**
+
+Do **not** let Helm **`make`** installs and Argo CD manage the **same** chart release names at once.
+
+If **Headlamp**, **Infisical**, or the operator were installed already via **`make helm-*`**, either:
+
+- **`helm uninstall`** those releases in the matching namespaces **before** the corresponding Argo **`Application`** syncs, or
+- Remove or pause the child **`Application`** manifests until you are ready to migrate.
+
+**Private Git or private Helm repos**
+
+This lab uses **public** GitHub and **public** Helm repos. If you switch to private sources, create **`Secret`** credentials in **`argocd`** and wire **`repo`** entries per [declarative setup](https://argo-cd.readthedocs.io/en/stable/operator-manual/declarative-setup/).
+
 ## Makefile targets
 
-| Target | Role |
-|--------|------|
-| `terraform-init` / `terraform-plan` / `terraform-apply` / `terraform-apply-auto` | Terraform via **`scripts/with-proxmox-env.sh`** in **`environments/pve1-testing1/terraform/`**. |
-| `terraform-destroy` / `terraform-destroy-auto` | Destroy applied Terraform resources (prompts unless `-auto`). |
-| `helm-repos` | Adds **`headlamp`** + **`infisical`** chart repos and **`helm repo update`** (invoked by other **`helm-*`** targets). |
-| `helm-headlamp` | **`headlamp/headlamp`** → **`kube-system`**, values **`gitops/.../headlamp-values.yaml`**. |
-| `helm-infisical` | **`infisical/infisical-standalone`** → **`infisical`**, values **`gitops/.../infisical-values.yaml`**. |
-| `helm-infisical-operator` | **`infisical/secrets-operator`** → **`infisical-system`**, values **`gitops/.../infisical-operator-values.yaml`**. |
+| Target                                                                           | Role                                                                                                                             |
+| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `terraform-init` / `terraform-plan` / `terraform-apply` / `terraform-apply-auto` | Terraform via **`scripts/with-proxmox-env.sh`** in **`environments/pve1-testing1/terraform/`**.                                  |
+| `terraform-destroy` / `terraform-destroy-auto`                                   | Destroy applied Terraform resources (prompts unless `-auto`).                                                                    |
+| `helm-repos`                                                                     | Adds **`argo`**, **`headlamp`**, **`infisical`** chart repos and **`helm repo update`** (invoked by other **`helm-*`** targets). |
+| `helm-argocd`                                                                    | **`argo/argo-cd`** (pinned chart version) → **`argocd`**, values **`gitops/.../argocd-values.yaml`**.                            |
+| `helm-headlamp`                                                                  | **`headlamp/headlamp`** → **`kube-system`**, values **`gitops/.../headlamp-values.yaml`**.                                       |
+| `helm-infisical`                                                                 | **`infisical/infisical-standalone`** → **`infisical`**, values **`gitops/.../infisical-values.yaml`**.                           |
+| `helm-infisical-operator`                                                        | **`infisical/secrets-operator`** → **`infisical-system`**, values **`gitops/.../infisical-operator-values.yaml`**.               |
 
 Override tooling with **`HELM=/path/to/helm`**; kubeconfig with **`KUBECONFIG`** (defaults to **`kubeconfig.pve1-testing1`** at the **Makefile** / repo root via **`ROOT`**).
 
 ## Layout
 
-- **`environments/pve1-testing1/terraform/`** — Proxmox provider, VM, disk, cloud-init snippet refs  
-- **`environments/pve1-testing1/bootstrap/cloud-init/`** — cloud-init templates referenced by Terraform  
-- **`gitops/environments/pve1-testing1/headlamp-values.yaml`** — Headlamp Ingress (**Traefik**, `headlamp.pve1-testing1.local`)  
-- **`gitops/environments/pve1-testing1/infisical-values.yaml`** — Infisical standalone (**`ingress.nginx.enabled: false`**, Traefik host **`infisical.pve1-testing1.local`**, **`infisical.replicaCount: 1`**)  
-- **`gitops/environments/pve1-testing1/infisical-operator-values.yaml`** — Secrets Operator **`hostAPI`** (in-cluster Infisical **`ClusterIP:8080`**)  
-- **`gitops/environments/pve1-testing1/infisical-secret-demo.yaml`** — Example **`InfisicalSecret`** → **`demo-infisical-managed-secret`** (edit slugs before apply)  
-- **`scripts/with-proxmox-env.sh`** — load **`.env`** → **`PROXMOX_VE_*`** for Terraform  
-- **`.env.example`** — template for **`PVE1_*`** / optional **`PVE1_SSH_PRIVATE_KEY_FILE`**  
+- **`environments/pve1-testing1/terraform/`** — Proxmox provider, VM, disk, cloud-init snippet refs
+- **`environments/pve1-testing1/bootstrap/cloud-init/`** — cloud-init templates referenced by Terraform
+- **`gitops/environments/pve1-testing1/argocd-values.yaml`** — Argo CD (**Traefik**, **`argocd.pve1-testing1.local`**, **`configs.params.server.insecure`**)
+- **`gitops/environments/pve1-testing1/argocd/`** — **`bootstrap.yaml`** + **`apps/`** Application manifests (GitOps; **`main`**)
+- **`gitops/environments/pve1-testing1/headlamp-values.yaml`** — Headlamp Ingress (**Traefik**, `headlamp.pve1-testing1.local`)
+- **`gitops/environments/pve1-testing1/infisical-values.yaml`** — Infisical standalone (**`ingress.nginx.enabled: false`**, Traefik host **`infisical.pve1-testing1.local`**, **`infisical.replicaCount: 1`**)
+- **`gitops/environments/pve1-testing1/infisical-operator-values.yaml`** — Secrets Operator **`hostAPI`** (in-cluster Infisical **`ClusterIP:8080`**)
+- **`gitops/environments/pve1-testing1/infisical-secret-demo.yaml`** — Example **`InfisicalSecret`** → **`demo-infisical-managed-secret`** (edit slugs before apply)
+- **`scripts/with-proxmox-env.sh`** — load **`.env`** → **`PROXMOX_VE_*`** for Terraform
+- **`.env.example`** — template for **`PVE1_*`** / optional **`PVE1_SSH_PRIVATE_KEY_FILE`**
 - **`kubeconfig.pve1-testing1`** — copied from the guest (**`.gitignore`** ignores **`kubeconfig*`**); **`Makefile`** defaults **`KUBECONFIG`** to **`$(ROOT)/kubeconfig.pve1-testing1`**
 
 ## Troubleshooting
@@ -301,7 +362,7 @@ Then **`terraform apply`** so the OS disk slot is the one resized (review plan f
 
 ### `helm: No such file or directory` / `make helm-repos` fails
 
-Install **Helm 3** on your workstation (the Makefile runs `helm` locally against the cluster API). macOS: **`brew install helm`**. See [Helm install docs](https://helm.sh/docs/intro/install/).
+Install **Helm 3** on your workstation (the Makefile runs `helm` locally against the cluster API).
 
 ### Infisical operator: `Folder with path '/' ... was not found`
 
@@ -324,10 +385,6 @@ The slug string does not match any project in the org (typo, wrong org, or place
 
 ## Caveats
 
-- **Sizing**: 2 vCPU / 4 GiB matches Infisical “minimum” but is tight with **k3s + Postgres + Redis + Headlamp + Infisical Secrets Operator**. Increase resources if pods pend/OOM.
+- **Sizing**: 2 vCPU / 4 GiB matches Infisical “minimum” but is tight with **k3s + Postgres + Redis + Argo CD + Headlamp + Infisical Secrets Operator**. Increase resources if pods pend/OOM.
 - **Snippets**: Datacenter → Storage must enable **Snippets** on `snippets_datastore_id`. HTTP **403** on upload almost always means missing **Datastore** privileges on that storage for the token — see **Troubleshooting**.
 - **Disk**: Terraform resizes the **`disk_interface`** slot (`virtio0` vs `scsi0`). If it does not match your template’s OS disk, you get a **second empty large disk** and root stays small — see **Troubleshooting**.
-
-## Phase 2
-
-**Argo CD** is not wired in this repository yet (no chart install or Application manifests). The intent is to point Argo at the same **`gitops/environments/pve1-testing1/`** values (and/or additional app manifests) once you add them.

@@ -1,0 +1,34 @@
+# Argo CD Helm chart values for single-node k3s + Traefik (HTTP lab ingress).
+# Chart: https://github.com/argoproj/argo-helm/tree/main/charts/argo-cd
+
+global:
+  domain: argocd.pve1-testing1.local
+
+configs:
+  params:
+    # Terminate TLS at Traefik; backend serves HTTP (chart Ingress targets HTTP port when true).
+    server.insecure: true
+
+server:
+  ingress:
+    enabled: true
+    controller: generic
+    ingressClassName: traefik
+    hostname: argocd.pve1-testing1.local
+    tls: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+repoServer:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+controller:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
